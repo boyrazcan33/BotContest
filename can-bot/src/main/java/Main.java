@@ -1,4 +1,5 @@
 import java.io.BufferedReader;
+import java.io.File;
 import java.io.InputStreamReader;
 import java.io.PrintStream;
 import java.nio.charset.StandardCharsets;
@@ -7,11 +8,17 @@ import java.util.Map;
 
 public class Main {
 
-    private static final String CATEGORY = "DIY";
-    private static final int CAT_ID = 3; // DIY = index 3
+    private static final String[] CATEGORY_NAMES = {
+            "Music", "Sports", "Kids", "DIY", "Video Games", "ASMR", "Beauty", "Cooking", "Finance"
+    };
+
+    private static final String[] AGE_BRACKET_NAMES = {"13-17", "18-24", "25-34", "35-44", "45-54", "55+"};
+
+    private static final String CATEGORY = detectCategory();
+    private static final int CAT_ID = getCatId(CATEGORY);
 
     // VIDEO_CATEGORY_MATCH[viewerCat][DIY=3] - how well each viewer interest matches DIY ads
-    private static final double[] INTEREST_TO_DIY = {
+    private static final double[] INTEREST_TO_AD = {
             0.1,   // Music
             0.3,   // Sports
             0.3,   // Kids
@@ -36,12 +43,6 @@ public class Main {
             0.5,   // Cooking video
             0.25   // Finance video
     };
-
-    private static final String[] CATEGORY_NAMES = {
-            "Music", "Sports", "Kids", "DIY", "Video Games", "ASMR", "Beauty", "Cooking", "Finance"
-    };
-
-    private static final String[] AGE_BRACKET_NAMES = {"13-17", "18-24", "25-34", "35-44", "45-54", "55+"};
 
     // AGE_CATEGORY_MULTIPLIER_MALE[age][DIY=3]
     private static final double[] AGE_MUL_MALE_DIY   = {0.1, 0.2, 0.4, 0.5, 0.45, 0.35};
@@ -89,6 +90,7 @@ public class Main {
 
         PrintStream out = new PrintStream(System.out, true, StandardCharsets.ISO_8859_1);
         out.println(CATEGORY);
+        log("category detected: %s", CATEGORY);
 
         BufferedReader in = new BufferedReader(
                 new InputStreamReader(System.in, StandardCharsets.ISO_8859_1));
@@ -154,7 +156,7 @@ public class Main {
         String[] interestArr = interests.isEmpty() ? new String[0] : interests.split(";");
         for (int i = 0; i < interestArr.length && i < INTEREST_WEIGHTS.length; i++) {
             int interestCatId = getCatId(interestArr[i].trim());
-            double r = INTEREST_TO_DIY[interestCatId];
+            double r = INTEREST_TO_AD[interestCatId];
             viewerMul += r * INTEREST_WEIGHTS[i];
         }
 
@@ -170,6 +172,16 @@ public class Main {
     }
 
     private static int[] computeBid(double estimatedValue) {
+        // %2 alt limit kontrolü
+        if (ebucks < initialBudget * 0.02) {
+            return new int[]{1, 1};
+        }
+
+        // Değersiz tur kontrolü
+        if (estimatedValue < 5.0) {
+            return new int[]{1, 1};
+        }
+
         double budgetRatio = (double) ebucks / initialBudget;
 
         double budgetFactor;
@@ -220,6 +232,31 @@ public class Main {
         }
     }
 
+    private static String detectCategory() {
+        try {
+            String jarPath = Main.class.getProtectionDomain()
+                    .getCodeSource()
+                    .getLocation()
+                    .toURI()
+                    .getPath();
+
+            log("jarPath: %s", jarPath);
+
+            String folderName = new File(jarPath).getParentFile().getName().toLowerCase();
+
+            log("folderName: %s", folderName);
+
+            for (String cat : CATEGORY_NAMES) {
+                if (folderName.contains(cat.toLowerCase().replace(" ", ""))) {
+                    return cat;
+                }
+            }
+        } catch (Exception e) {
+            log("detectCategory error: %s", e.getMessage());
+        }
+        return "DIY"; // default
+    }
+
     private static int getBaseValue(long viewCount) {
         for (long[] bracket : VIEW_BRACKETS) {
             if (viewCount >= bracket[0] && viewCount <= bracket[1]) {
@@ -229,7 +266,7 @@ public class Main {
         return 21;
     }
 
-    private static int getCatId(String name) {
+    static int getCatId(String name) {
         for (int i = 0; i < CATEGORY_NAMES.length; i++) {
             if (CATEGORY_NAMES[i].equalsIgnoreCase(name)) return i;
         }
