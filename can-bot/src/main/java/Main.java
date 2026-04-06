@@ -198,8 +198,14 @@ public class Main {
         return new int[]{startBid, maxBid};
     }
 
+    private static int summaryCount = 0;
+
+
     // Adjusts globalMultiplier based on ROI from last 100 rounds
     private static void handleSummary(String line) {
+        summaryCount++;
+        // warm-up period: observe only, no adjustment
+        if (summaryCount <= 5) return;
         String[] parts = line.split(" ");
         if (parts.length < 3) return;
 
