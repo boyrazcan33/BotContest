@@ -10,26 +10,28 @@ public class Main {
     // Category we advertise on - fixed for the whole run
     private static final String CATEGORY = "DIY";
 
-    // Starting bid range before any multipliers
-    private static final int BASE_MIN = 5;
-    private static final int BASE_MAX = 60;
+    // Base bid range - fixed, not derived from past wins
+    private static final int BASE_MIN = 3;
+    private static final int BASE_MAX = 50;
 
-    // Budget thresholds (as ratio of initial budget)
-    private static final double BUDGET_LOW    = 0.20; // 20% remaining - be careful
-    private static final double BUDGET_DANGER = 0.05; // 5% remaining - be very careful
+    // Junk video threshold - if score is below this, bid 1 1
+    private static final double JUNK_THRESHOLD = 0.8;
+
+    // Engagement ratio threshold below which a non-category video is junk
+    private static final double JUNK_ENGAGEMENT = 0.005;
 
     // ROI thresholds for adjusting global multiplier every 100 rounds
-    private static final double ROI_LOW  = 0.15; // too low  -> we are overbidding
-    private static final double ROI_HIGH = 0.40; // too high -> we can afford to bid more
+    private static final double ROI_LOW  = 0.28; // overbidding - cut hard
+    private static final double ROI_HIGH = 0.45; // room to be more aggressive
+
+    // Budget thresholds
+    private static final double BUDGET_LOW    = 0.20;
+    private static final double BUDGET_DANGER = 0.05;
 
     // Runtime state
     private static int    initialBudget    = 10_000_000;
     private static int    ebucks           = 10_000_000;
-    private static double globalMultiplier = 1.0; // adjusted after each summary
-
-    // Win cost tracking for opponent estimation
-    private static long winCount   = 0;
-    private static long winCostSum = 0;
+    private static double globalMultiplier = 1.0;
 
     public static void main(String[] args) throws Exception {
         if (args.length > 0) {
@@ -65,57 +67,70 @@ public class Main {
             // Compute a score for this video/viewer combination
             double score = computeScore(fields);
 
-            // Turn score into a concrete bid
-            int[] bid = computeBid(score);
-            out.println(bid[0] + " " + bid[1]);
+            // Sniper mode: junk videos get minimum bid
+            if (isJunk(score, fields)) {
+                out.println("1 1");
+            } else {
+                int[] bid = computeBid(score);
+                out.println(bid[0] + " " + bid[1]);
+            }
 
             // Read win or lose
             String result = in.readLine();
             if (result != null && result.startsWith("W ")) {
                 int spent = Integer.parseInt(result.substring(2).trim());
                 ebucks -= spent;
-                winCount++;
-                winCostSum += spent;
             }
         }
 
-        log("done | ebucks=%d wins=%d avgWinCost=%.1f globalMult=%.2f",
-                ebucks, winCount,
-                winCount > 0 ? (double) winCostSum / winCount : 0,
-                globalMultiplier);
+        log("done | ebucks=%d globalMult=%.2f", ebucks, globalMultiplier);
+    }
+
+    // Returns true if this video is not worth real money
+    private static boolean isJunk(double score, Map<String, String> fields) {
+        // Not our category AND low engagement = junk
+        boolean categoryMatch = CATEGORY.equals(fields.get("video.category"));
+        double engagement = computeEngagement(
+                fields.getOrDefault("video.viewCount",    "1"),
+                fields.getOrDefault("video.commentCount", "0"));
+
+        if (!categoryMatch && engagement < JUNK_ENGAGEMENT) return true;
+
+        // Score below threshold = not worth bidding real money
+        return score < JUNK_THRESHOLD;
     }
 
     // Returns a score multiplier for this round
-    private static double computeScore(Map<String, String> f) {
+    private static double computeScore(Map<String, String> fields) {
         double score = 1.0;
 
         // Category match boosts value significantly
-        if (CATEGORY.equals(f.get("video.category"))) {
+        if (CATEGORY.equals(fields.get("video.category"))) {
             score *= 1.8;
         }
 
         // Viewer interests: first interest = strongest match
-        String interests = f.getOrDefault("viewer.interests", "");
+        String interests = fields.getOrDefault("viewer.interests", "");
         String[] interestArr = interests.isEmpty() ? new String[0] : interests.split(";");
         if (interestArr.length > 0 && CATEGORY.equals(interestArr[0].trim())) {
-            score *= 1.5; // top interest - highest relevance
+            score *= 1.5;
         } else if (interests.contains(CATEGORY)) {
-            score *= 1.2; // in list but not first
+            score *= 1.2;
         }
 
         // Subscribed viewers generate more value
-        if ("Y".equals(f.get("viewer.subscribed"))) {
+        if ("Y".equals(fields.get("viewer.subscribed"))) {
             score *= 1.3;
         }
 
         // Engagement ratio: high comments/views = niche engaged audience
         double engagement = computeEngagement(
-                f.getOrDefault("video.viewCount",    "1"),
-                f.getOrDefault("video.commentCount", "0"));
+                fields.getOrDefault("video.viewCount",    "1"),
+                fields.getOrDefault("video.commentCount", "0"));
         score *= engagementMultiplier(engagement);
 
         // Age: DIY audience peaks at 25-44
-        score *= ageMultiplier(f.getOrDefault("viewer.age", ""));
+        score *= ageMultiplier(fields.getOrDefault("viewer.age", ""));
 
         // 3 interests = more niche viewer
         if (interestArr.length == 3) {
@@ -136,14 +151,13 @@ public class Main {
         }
     }
 
-    // Maps engagement ratio to a multiplier
     private static double engagementMultiplier(double ratio) {
-        if (ratio >= 0.05) return 2.0; // very niche, very valuable
+        if (ratio >= 0.05) return 2.0;
         if (ratio >= 0.02) return 1.6;
         if (ratio >= 0.01) return 1.3;
         if (ratio >= 0.005) return 1.1;
         if (ratio >= 0.001) return 1.0;
-        return 0.7; // inflated view count, low real engagement
+        return 0.7;
     }
 
     // DIY content resonates most with working-age adults
@@ -163,7 +177,6 @@ public class Main {
     private static int[] computeBid(double score) {
         double budgetRatio = (double) ebucks / initialBudget;
 
-        // Slow down spending as budget shrinks
         double budgetFactor;
         if (budgetRatio < BUDGET_DANGER) {
             budgetFactor = 0.3;
@@ -173,18 +186,12 @@ public class Main {
             budgetFactor = 1.0;
         }
 
-        // Use observed average win cost as our baseline once we have enough data
-        double baseline = winCount > 50
-                ? (double) winCostSum / winCount
-                : BASE_MAX;
-
         double effective = score * globalMultiplier * budgetFactor;
 
-        // maxBid: go slightly above average win cost when score is high
-        int maxBid = (int) (baseline * effective * 1.1);
-        maxBid = Math.max(1, Math.min(ebucks, maxBid));
+        int maxBid = (int) (BASE_MAX * effective);
+        maxBid = Math.max(2, Math.min(ebucks, maxBid));
 
-        // startBid: close to maxBid to win tie-breakers (protocol: higher startBid wins ties)
+        // startBid close to maxBid to win tie-breakers
         int startBid = (int) (maxBid * 0.85);
         startBid = Math.max(1, Math.min(ebucks, startBid));
 
@@ -193,7 +200,6 @@ public class Main {
 
     // Adjusts globalMultiplier based on ROI from last 100 rounds
     private static void handleSummary(String line) {
-        // Format: "S {points} {ebucks}"
         String[] parts = line.split(" ");
         if (parts.length < 3) return;
 
@@ -206,13 +212,12 @@ public class Main {
             log("summary | roi=%.4f globalMult=%.2f", roi, globalMultiplier);
 
             if (roi < ROI_LOW) {
-                globalMultiplier *= 0.90; // overbidding, pull back
+                globalMultiplier *= 0.75; // overbidding - cut hard
             } else if (roi > ROI_HIGH) {
                 globalMultiplier *= 1.10; // room to be more aggressive
             }
 
-            // Keep multiplier in a sane range
-            globalMultiplier = Math.max(0.3, Math.min(3.0, globalMultiplier));
+            globalMultiplier = Math.max(0.2, Math.min(3.0, globalMultiplier));
 
         } catch (NumberFormatException e) {
             log("summary parse error: %s", line);
