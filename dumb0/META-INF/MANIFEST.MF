@@ -1,0 +1,4 @@
+Manifest-Version: 1.0
+Main-Class: summer2016.Dumb0
+Class-Path: .
+

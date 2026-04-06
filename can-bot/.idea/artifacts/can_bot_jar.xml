@@ -1,0 +1,8 @@
+<component name="ArtifactManager">
+  <artifact type="jar" name="can-bot:jar">
+    <output-path>$PROJECT_DIR$/out/artifacts/can_bot_jar</output-path>
+    <root id="archive" name="can-bot.jar">
+      <element id="module-output" name="can-bot" />
+    </root>
+  </artifact>
+</component>
