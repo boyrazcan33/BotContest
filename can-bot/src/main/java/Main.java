@@ -77,7 +77,9 @@ public class Main {
 
             // Read win or lose
             String result = in.readLine();
-            if (result != null && result.startsWith("W ")) {
+            if (result != null && result.startsWith("S ")) {
+                handleSummary(result);
+            } else if (result != null && result.startsWith("W ")) {
                 int spent = Integer.parseInt(result.substring(2).trim());
                 ebucks -= spent;
             }
