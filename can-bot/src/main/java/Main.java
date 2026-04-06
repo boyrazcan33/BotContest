@@ -7,31 +7,79 @@ import java.util.Map;
 
 public class Main {
 
-    // Category we advertise on - fixed for the whole run
     private static final String CATEGORY = "DIY";
+    private static final int CAT_ID = 3; // DIY = index 3
 
-    // Base bid range - fixed, not derived from past wins
-    private static final int BASE_MIN = 3;
-    private static final int BASE_MAX = 50;
+    // VIDEO_CATEGORY_MATCH[viewerCat][DIY=3] - how well each viewer interest matches DIY ads
+    private static final double[] INTEREST_TO_DIY = {
+            0.1,   // Music
+            0.3,   // Sports
+            0.3,   // Kids
+            1.0,   // DIY
+            0.28,  // Video Games
+            0.2,   // ASMR
+            0.25,  // Beauty
+            0.5,   // Cooking
+            0.25   // Finance
+    };
 
-    // Junk video threshold - if score is below this, bid 1 1
-    private static final double JUNK_THRESHOLD = 0.8;
+    // adMatch for each video category when our bot is DIY
+    // VIDEO_CATEGORY_MATCH[DIY=3][videoCat] = row 3
+    private static final double[] AD_MATCH_BY_VIDEO_CAT = {
+            0.1,   // Music video
+            0.3,   // Sports video
+            0.3,   // Kids video
+            1.0,   // DIY video
+            0.28,  // Video Games video
+            0.2,   // ASMR video
+            0.25,  // Beauty video
+            0.5,   // Cooking video
+            0.25   // Finance video
+    };
 
-    // Engagement ratio threshold below which a non-category video is junk
-    private static final double JUNK_ENGAGEMENT = 0.005;
+    private static final String[] CATEGORY_NAMES = {
+            "Music", "Sports", "Kids", "DIY", "Video Games", "ASMR", "Beauty", "Cooking", "Finance"
+    };
 
-    // ROI thresholds for adjusting global multiplier every 100 rounds
-    private static final double ROI_LOW  = 0.28; // overbidding - cut hard
-    private static final double ROI_HIGH = 0.45; // room to be more aggressive
+    private static final String[] AGE_BRACKET_NAMES = {"13-17", "18-24", "25-34", "35-44", "45-54", "55+"};
 
-    // Budget thresholds
+    // AGE_CATEGORY_MULTIPLIER_MALE[age][DIY=3]
+    private static final double[] AGE_MUL_MALE_DIY   = {0.1, 0.2, 0.4, 0.5, 0.45, 0.35};
+    // AGE_CATEGORY_MULTIPLIER_FEMALE[age][DIY=3]
+    private static final double[] AGE_MUL_FEMALE_DIY = {0.28, 0.2, 0.3, 0.4, 0.4, 0.3};
+
+    // INTEREST_POSITION_WEIGHTS
+    private static final double[] INTEREST_WEIGHTS = {1.0, 0.44, 0.225};
+
+    // ViewBracket baseValues by viewCount range
+    // {min, max, baseValue}
+    private static final long[][] VIEW_BRACKETS = {
+            {0,        99,       11},
+            {100,      999,      21},
+            {1000,     4999,      8},
+            {5000,     24999,    32},
+            {25000,    99999,    20},
+            {100000,   499999,   37},
+            {500000,   1999999,  41},
+            {2000000,  7999999,  22},
+            {8000000,  24999999, 37},
+            {25000000, 74999999, 14},
+            {75000000, Long.MAX_VALUE, 21}
+    };
+
+    private static final int COMMENT_WEIGHT = 15;
+    private static final int K = 9999;
+    private static final double SUBSCRIBED_BONUS = 0.17;
+
+    private static final double ROI_LOW  = 0.30;
+    private static final double ROI_HIGH = 0.45;
     private static final double BUDGET_LOW    = 0.20;
     private static final double BUDGET_DANGER = 0.05;
 
-    // Runtime state
     private static int    initialBudget    = 10_000_000;
-    private static int    ebucks           = 10_000_000;
+    private static long   ebucks           = 10_000_000;
     private static double globalMultiplier = 1.0;
+    private static int    summaryCount     = 0;
 
     public static void main(String[] args) throws Exception {
         if (args.length > 0) {
@@ -51,31 +99,21 @@ public class Main {
             String line = in.readLine();
             if (line == null) break;
 
-            // Summary arrives every 100 rounds: "S {points} {ebucks}"
             if (line.startsWith("S ")) {
                 handleSummary(line);
                 continue;
             }
 
-            // Parse comma-separated key=value fields
             fields.clear();
             for (String pair : line.split(",")) {
                 int eq = pair.indexOf('=');
                 if (eq > 0) fields.put(pair.substring(0, eq), pair.substring(eq + 1));
             }
 
-            // Compute a score for this video/viewer combination
-            double score = computeScore(fields);
+            double estimatedValue = estimateValue(fields);
+            int[] bid = computeBid(estimatedValue);
+            out.println(bid[0] + " " + bid[1]);
 
-            // Sniper mode: junk videos get minimum bid
-            if (isJunk(score, fields)) {
-                out.println("1 1");
-            } else {
-                int[] bid = computeBid(score);
-                out.println(bid[0] + " " + bid[1]);
-            }
-
-            // Read win or lose
             String result = in.readLine();
             if (result != null && result.startsWith("S ")) {
                 handleSummary(result);
@@ -88,95 +126,50 @@ public class Main {
         log("done | ebucks=%d globalMult=%.2f", ebucks, globalMultiplier);
     }
 
-    // Returns true if this video is not worth real money
-    private static boolean isJunk(double score, Map<String, String> fields) {
-        // Not our category AND low engagement = junk
-        boolean categoryMatch = CATEGORY.equals(fields.get("video.category"));
-        double engagement = computeEngagement(
-                fields.getOrDefault("video.viewCount",    "1"),
-                fields.getOrDefault("video.commentCount", "0"));
+    private static double estimateValue(Map<String, String> fields) {
+        // 1. baseValue from viewCount bracket
+        long viewCount    = parseLong(fields.getOrDefault("video.viewCount", "1"));
+        long commentCount = parseLong(fields.getOrDefault("video.commentCount", "0"));
+        int baseValue = getBaseValue(viewCount);
 
-        if (!categoryMatch && engagement < JUNK_ENGAGEMENT) return true;
+        // 2. comment multiplier — same formula as valueFor
+        double comment = (double)(K + commentCount * COMMENT_WEIGHT) / (double)(viewCount + K);
+        double base = baseValue * (1.0 + comment);
 
-        // Score below threshold = not worth bidding real money
-        return score < JUNK_THRESHOLD;
-    }
+        // 3. adMatch — based on video category
+        String videoCat = fields.getOrDefault("video.category", "");
+        int videoCatId = getCatId(videoCat);
+        double adMatch = Math.max(0.161, AD_MATCH_BY_VIDEO_CAT[videoCatId]);
 
-    // Returns a score multiplier for this round
-    private static double computeScore(Map<String, String> fields) {
-        double score = 1.0;
+        // 4. viewerMul
+        double viewerMul = 0.0;
 
-        // Category match boosts value significantly
-        if (CATEGORY.equals(fields.get("video.category"))) {
-            score *= 1.8;
+        // subscribed
+        if ("Y".equals(fields.get("viewer.subscribed"))) {
+            viewerMul += SUBSCRIBED_BONUS;
         }
 
-        // Viewer interests: first interest = strongest match
+        // interests
         String interests = fields.getOrDefault("viewer.interests", "");
         String[] interestArr = interests.isEmpty() ? new String[0] : interests.split(";");
-        if (interestArr.length > 0 && CATEGORY.equals(interestArr[0].trim())) {
-            score *= 1.5;
-        } else if (interests.contains(CATEGORY)) {
-            score *= 1.2;
+        for (int i = 0; i < interestArr.length && i < INTEREST_WEIGHTS.length; i++) {
+            int interestCatId = getCatId(interestArr[i].trim());
+            double r = INTEREST_TO_DIY[interestCatId];
+            viewerMul += r * INTEREST_WEIGHTS[i];
         }
 
-        // Subscribed viewers generate more value
-        if ("Y".equals(fields.get("viewer.subscribed"))) {
-            score *= 1.3;
-        }
+        // age multiplier
+        String age    = fields.getOrDefault("viewer.age", "");
+        String gender = fields.getOrDefault("viewer.gender", "M");
+        int ageId = getAgeId(age);
+        double ageMul = "F".equals(gender) ? AGE_MUL_FEMALE_DIY[ageId] : AGE_MUL_MALE_DIY[ageId];
+        viewerMul += ageMul;
 
-        // Engagement ratio: high comments/views = niche engaged audience
-        double engagement = computeEngagement(
-                fields.getOrDefault("video.viewCount",    "1"),
-                fields.getOrDefault("video.commentCount", "0"));
-        score *= engagementMultiplier(engagement);
-
-        // Age: DIY audience peaks at 25-44
-        score *= ageMultiplier(fields.getOrDefault("viewer.age", ""));
-
-        // 3 interests = more niche viewer
-        if (interestArr.length == 3) {
-            score *= 1.1;
-        }
-
-        return score;
+        double estimated = Math.ceil(base * viewerMul * adMatch);
+        return estimated;
     }
 
-    private static double computeEngagement(String viewStr, String commentStr) {
-        try {
-            long views    = Long.parseLong(viewStr.trim());
-            long comments = Long.parseLong(commentStr.trim());
-            if (views == 0) return 0;
-            return (double) comments / views;
-        } catch (NumberFormatException e) {
-            return 0;
-        }
-    }
-
-    private static double engagementMultiplier(double ratio) {
-        if (ratio >= 0.05) return 2.0;
-        if (ratio >= 0.02) return 1.6;
-        if (ratio >= 0.01) return 1.3;
-        if (ratio >= 0.005) return 1.1;
-        if (ratio >= 0.001) return 1.0;
-        return 0.7;
-    }
-
-    // DIY content resonates most with working-age adults
-    private static double ageMultiplier(String age) {
-        switch (age) {
-            case "25-34": return 1.25;
-            case "35-44": return 1.20;
-            case "18-24": return 1.05;
-            case "45-54": return 0.95;
-            case "55+":   return 0.85;
-            case "13-17": return 0.80;
-            default:      return 1.0;
-        }
-    }
-
-    // Converts score into [startBid, maxBid]
-    private static int[] computeBid(double score) {
+    private static int[] computeBid(double estimatedValue) {
         double budgetRatio = (double) ebucks / initialBudget;
 
         double budgetFactor;
@@ -188,26 +181,21 @@ public class Main {
             budgetFactor = 1.0;
         }
 
-        double effective = score * globalMultiplier * budgetFactor;
+        double effective = estimatedValue * globalMultiplier * budgetFactor;
 
-        int maxBid = (int) (BASE_MAX * effective);
-        maxBid = Math.max(2, Math.min(ebucks, maxBid));
+        int maxBid = (int) effective;
+        maxBid = (int) Math.max(2, Math.min(ebucks, maxBid));
 
-        // startBid close to maxBid to win tie-breakers
-        int startBid = (int) (maxBid * 0.85);
-        startBid = Math.max(1, Math.min(ebucks, startBid));
+        int startBid = (int)(maxBid * 0.85);
+        startBid = (int) Math.max(1, Math.min(ebucks, startBid));
 
         return new int[]{startBid, maxBid};
     }
 
-    private static int summaryCount = 0;
-
-
-    // Adjusts globalMultiplier based on ROI from last 100 rounds
     private static void handleSummary(String line) {
         summaryCount++;
-        // warm-up period: observe only, no adjustment
         if (summaryCount <= 5) return;
+
         String[] parts = line.split(" ");
         if (parts.length < 3) return;
 
@@ -220,15 +208,46 @@ public class Main {
             log("summary | roi=%.4f globalMult=%.2f", roi, globalMultiplier);
 
             if (roi < ROI_LOW) {
-                globalMultiplier *= 0.75; // overbidding - cut hard
+                globalMultiplier *= 0.80;
             } else if (roi > ROI_HIGH) {
-                globalMultiplier *= 1.10; // room to be more aggressive
+                globalMultiplier *= 1.10;
             }
 
             globalMultiplier = Math.max(0.2, Math.min(3.0, globalMultiplier));
 
         } catch (NumberFormatException e) {
             log("summary parse error: %s", line);
+        }
+    }
+
+    private static int getBaseValue(long viewCount) {
+        for (long[] bracket : VIEW_BRACKETS) {
+            if (viewCount >= bracket[0] && viewCount <= bracket[1]) {
+                return (int) bracket[2];
+            }
+        }
+        return 21;
+    }
+
+    private static int getCatId(String name) {
+        for (int i = 0; i < CATEGORY_NAMES.length; i++) {
+            if (CATEGORY_NAMES[i].equalsIgnoreCase(name)) return i;
+        }
+        return 3; // default DIY
+    }
+
+    private static int getAgeId(String age) {
+        for (int i = 0; i < AGE_BRACKET_NAMES.length; i++) {
+            if (AGE_BRACKET_NAMES[i].equals(age)) return i;
+        }
+        return 2; // default 25-34
+    }
+
+    private static long parseLong(String s) {
+        try {
+            return Long.parseLong(s.trim());
+        } catch (NumberFormatException e) {
+            return 0;
         }
     }
 
