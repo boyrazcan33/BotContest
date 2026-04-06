@@ -67,15 +67,25 @@ public class Main {
     private static final int K = 9999;
     private static final double SUBSCRIBED_BONUS = 0.17;
 
-    private static final double ROI_LOW  = 0.30;
-    private static final double ROI_HIGH = 0.45;
+    private static final double ROI_LOW  = 0.25;
+    private static final double ROI_HIGH = 0.50;
     private static final double BUDGET_LOW    = 0.20;
     private static final double BUDGET_DANGER = 0.05;
+
+    private static final int EXPECTED_ROUNDS = 1_000_000;
+    private static final double MIN_SPEND_RATIO = 0.30;
 
     private static int    initialBudget    = 10_000_000;
     private static long   ebucks           = 10_000_000;
     private static double globalMultiplier = 1.0;
     private static int    summaryCount     = 0;
+
+    private static int    consecutiveWins   = 0;
+    private static int    consecutiveLosses = 0;
+    private static double startBidRatio     = 0.70;
+
+    private static long totalSpent  = 0;
+    private static int  roundCount  = 0;
 
     public static void main(String[] args) throws Exception {
         if (args.length > 0) {
@@ -101,6 +111,8 @@ public class Main {
                 continue;
             }
 
+            roundCount++;
+
             fields.clear();
             for (String pair : line.split(",")) {
                 int eq = pair.indexOf('=');
@@ -117,10 +129,30 @@ public class Main {
             } else if (result != null && result.startsWith("W ")) {
                 int spent = Integer.parseInt(result.substring(2).trim());
                 ebucks -= spent;
+                totalSpent += spent;
+
+                consecutiveWins++;
+                consecutiveLosses = 0;
+                if (consecutiveWins >= 5) {
+                    startBidRatio = Math.max(0.30, startBidRatio * 0.96);
+                    log("startBidRatio -> %.3f (easy wins, streak=%d)", startBidRatio, consecutiveWins);
+                    consecutiveWins = 0;
+                }
+
+            } else if (result != null && result.equals("L")) {
+                consecutiveLosses++;
+                consecutiveWins = 0;
+                if (consecutiveLosses >= 5) {
+                    startBidRatio = Math.min(0.95, startBidRatio * 1.04);
+                    log("startBidRatio -> %.3f (competitive, streak=%d)", startBidRatio, consecutiveLosses);
+                    consecutiveLosses = 0;
+                }
             }
         }
 
-        log("done | ebucks=%d globalMult=%.2f", ebucks, globalMultiplier);
+        long scoreDenom = Math.max(totalSpent, (long)(initialBudget * MIN_SPEND_RATIO));
+        log("done | ebucks=%d spent=%d (%.1f%%) scoreDenom=%d globalMult=%.2f startBidRatio=%.3f",
+                ebucks, totalSpent, 100.0 * totalSpent / initialBudget, scoreDenom, globalMultiplier, startBidRatio);
     }
 
     private static double estimateValue(Map<String, String> fields) {
@@ -159,8 +191,12 @@ public class Main {
     }
 
     private static int[] computeBid(double estimatedValue) {
-        if (ebucks < initialBudget * 0.02) {
-            return new int[]{1, 1};
+        long minSurvival = initialBudget / 50;
+        long minRequired = (long)(initialBudget * MIN_SPEND_RATIO);
+
+        // Only stop if we've spent enough AND hit survival threshold
+        if (ebucks <= minSurvival && totalSpent >= minRequired) {
+            return new int[]{0, 0};
         }
 
         if (estimatedValue < 5.0) {
@@ -168,6 +204,7 @@ public class Main {
         }
 
         double budgetRatio = (double) ebucks / initialBudget;
+        double spendRatio = (double) totalSpent / initialBudget;
 
         double budgetFactor;
         if (budgetRatio < BUDGET_DANGER) {
@@ -180,18 +217,38 @@ public class Main {
 
         double effective = estimatedValue * globalMultiplier * budgetFactor;
 
-        int maxBid = (int) effective;
-        maxBid = (int) Math.max(2, Math.min(ebucks, maxBid));
+        // PANIC MODE: If critically behind on spending after 60% of rounds
+        if (roundCount > EXPECTED_ROUNDS * 0.6 && spendRatio < 0.15) {
+            effective = Math.max(effective, estimatedValue * 2.0);
+            log("PANIC: spendRatio=%.2f round=%d forcing aggressive bids", spendRatio, roundCount);
+        }
+        // Late-game enforcement: start at 50% of expected rounds
+        else if (roundCount > EXPECTED_ROUNDS * 0.5) {
+            if (totalSpent < minRequired) {
+                long deficit = minRequired - totalSpent;
+                long roundsLeft = EXPECTED_ROUNDS - roundCount;
+                if (roundsLeft > 0) {
+                    double targetPerRound = (double) deficit / roundsLeft;
+                    effective = Math.max(effective, targetPerRound * 1.5);
+                }
+            }
+        }
 
-        int startBid = (int)(maxBid * 0.85);
-        startBid = (int) Math.max(1, Math.min(ebucks, startBid));
+        int maxBid = (int) Math.min(ebucks, (long) effective);
+        maxBid = Math.max(2, maxBid);
+
+        int startBid = (int)(maxBid * startBidRatio);
+        startBid = (int) Math.min(ebucks, startBid);
+        startBid = Math.max(1, startBid);
 
         return new int[]{startBid, maxBid};
     }
 
     private static void handleSummary(String line) {
         summaryCount++;
-        if (summaryCount <= 5) return;
+
+        // Longer warm-up: first 1000 rounds
+        if (summaryCount <= 10) return;
 
         String[] parts = line.split(" ");
         if (parts.length < 3) return;
@@ -202,15 +259,17 @@ public class Main {
             if (spent == 0) return;
 
             double roi = points / spent;
-            log("summary | roi=%.4f globalMult=%.2f", roi, globalMultiplier);
+            log("summary | roi=%.4f globalMult=%.2f startBidRatio=%.3f totalSpent=%d (%.1f%%)",
+                    roi, globalMultiplier, startBidRatio, totalSpent, 100.0 * totalSpent / initialBudget);
 
             if (roi < ROI_LOW) {
-                globalMultiplier *= 0.80;
+                globalMultiplier *= 0.85;
             } else if (roi > ROI_HIGH) {
-                globalMultiplier *= 1.10;
+                globalMultiplier *= 1.08;
             }
 
-            globalMultiplier = Math.max(0.2, Math.min(3.0, globalMultiplier));
+            // Higher floor: don't go below 0.6
+            globalMultiplier = Math.max(0.6, Math.min(3.0, globalMultiplier));
 
         } catch (NumberFormatException e) {
             log("summary parse error: %s", line);
