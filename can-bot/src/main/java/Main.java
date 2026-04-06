@@ -17,43 +17,38 @@ public class Main {
     private static final String CATEGORY = detectCategory();
     private static final int CAT_ID = getCatId(CATEGORY);
 
-    // VIDEO_CATEGORY_MATCH[viewerCat][DIY=3] - how well each viewer interest matches DIY ads
-    private static final double[] INTEREST_TO_AD = {
-            0.1,   // Music
-            0.3,   // Sports
-            0.3,   // Kids
-            1.0,   // DIY
-            0.28,  // Video Games
-            0.2,   // ASMR
-            0.25,  // Beauty
-            0.5,   // Cooking
-            0.25   // Finance
+    private static final double[][] VIDEO_CATEGORY_MATCH = {
+            {1.0,  0.28, 0.2,  0.1,  0.25, 0.4,  0.45, 0.1,  0.19},
+            {0.28, 1.0,  0.25, 0.3,  0.35, 0.19, 0.1,  0.28, 0.2 },
+            {0.2,  0.25, 1.0,  0.3,  0.5,  0.28, 0.28, 0.3,  0.19},
+            {0.1,  0.3,  0.3,  1.0,  0.28, 0.2,  0.25, 0.5,  0.25},
+            {0.25, 0.35, 0.5,  0.28, 1.0,  0.3,  0.1,  0.19, 0.1 },
+            {0.4,  0.19, 0.28, 0.2,  0.3,  1.0,  0.5,  0.25, 0.19},
+            {0.45, 0.1,  0.28, 0.25, 0.1,  0.5,  1.0,  0.35, 0.1 },
+            {0.1,  0.28, 0.3,  0.5,  0.19, 0.25, 0.35, 1.0,  0.28},
+            {0.19, 0.2,  0.19, 0.25, 0.1,  0.19, 0.1,  0.28, 1.0 }
     };
 
-    // adMatch for each video category when our bot is DIY
-    // VIDEO_CATEGORY_MATCH[DIY=3][videoCat] = row 3
-    private static final double[] AD_MATCH_BY_VIDEO_CAT = {
-            0.1,   // Music video
-            0.3,   // Sports video
-            0.3,   // Kids video
-            1.0,   // DIY video
-            0.28,  // Video Games video
-            0.2,   // ASMR video
-            0.25,  // Beauty video
-            0.5,   // Cooking video
-            0.25   // Finance video
+    private static final double[][] AGE_MUL_MALE = {
+            {0.45, 0.4,  0.28, 0.1,  0.6,  0.25, 0.05, 0.05, 0.05},
+            {0.5,  0.5,  0.05, 0.2,  0.55, 0.2,  0.05, 0.28, 0.3 },
+            {0.3,  0.45, 0.25, 0.4,  0.35, 0.1,  0.05, 0.25, 0.45},
+            {0.2,  0.4,  0.45, 0.5,  0.2,  0.05, 0.05, 0.3,  0.5 },
+            {0.28, 0.3,  0.25, 0.45, 0.1,  0.05, 0.05, 0.35, 0.4 },
+            {0.28, 0.2,  0.2,  0.35, 0.05, 0.05, 0.05, 0.4,  0.3 }
     };
 
-    // AGE_CATEGORY_MULTIPLIER_MALE[age][DIY=3]
-    private static final double[] AGE_MUL_MALE_DIY   = {0.1, 0.2, 0.4, 0.5, 0.45, 0.35};
-    // AGE_CATEGORY_MULTIPLIER_FEMALE[age][DIY=3]
-    private static final double[] AGE_MUL_FEMALE_DIY = {0.28, 0.2, 0.3, 0.4, 0.4, 0.3};
+    private static final double[][] AGE_MUL_FEMALE = {
+            {0.5,  0.28, 0.28, 0.28, 0.3,  0.5,  0.45, 0.28, 0.19},
+            {0.5,  0.28, 0.19, 0.2,  0.2,  0.4,  0.55, 0.25, 0.1 },
+            {0.3,  0.28, 0.4,  0.3,  0.28, 0.25, 0.45, 0.4,  0.3 },
+            {0.2,  0.1,  0.5,  0.4,  0.1,  0.28, 0.35, 0.5,  0.3 },
+            {0.28, 0.1,  0.3,  0.4,  0.19, 0.1,  0.25, 0.5,  0.25},
+            {0.28, 0.1,  0.25, 0.3,  0.19, 0.1,  0.2,  0.5,  0.2 }
+    };
 
-    // INTEREST_POSITION_WEIGHTS
     private static final double[] INTEREST_WEIGHTS = {1.0, 0.44, 0.225};
 
-    // ViewBracket baseValues by viewCount range
-    // {min, max, baseValue}
     private static final long[][] VIEW_BRACKETS = {
             {0,        99,       11},
             {100,      999,      21},
@@ -90,7 +85,7 @@ public class Main {
 
         PrintStream out = new PrintStream(System.out, true, StandardCharsets.ISO_8859_1);
         out.println(CATEGORY);
-        log("category detected: %s", CATEGORY);
+        log("category detected: %s (id=%d)", CATEGORY, CAT_ID);
 
         BufferedReader in = new BufferedReader(
                 new InputStreamReader(System.in, StandardCharsets.ISO_8859_1));
@@ -129,55 +124,45 @@ public class Main {
     }
 
     private static double estimateValue(Map<String, String> fields) {
-        // 1. baseValue from viewCount bracket
         long viewCount    = parseLong(fields.getOrDefault("video.viewCount", "1"));
         long commentCount = parseLong(fields.getOrDefault("video.commentCount", "0"));
         int baseValue = getBaseValue(viewCount);
 
-        // 2. comment multiplier — same formula as valueFor
         double comment = (double)(K + commentCount * COMMENT_WEIGHT) / (double)(viewCount + K);
         double base = baseValue * (1.0 + comment);
 
-        // 3. adMatch — based on video category
         String videoCat = fields.getOrDefault("video.category", "");
         int videoCatId = getCatId(videoCat);
-        double adMatch = Math.max(0.161, AD_MATCH_BY_VIDEO_CAT[videoCatId]);
+        double adMatch = Math.max(0.161, VIDEO_CATEGORY_MATCH[CAT_ID][videoCatId]);
 
-        // 4. viewerMul
         double viewerMul = 0.0;
 
-        // subscribed
         if ("Y".equals(fields.get("viewer.subscribed"))) {
             viewerMul += SUBSCRIBED_BONUS;
         }
 
-        // interests
         String interests = fields.getOrDefault("viewer.interests", "");
         String[] interestArr = interests.isEmpty() ? new String[0] : interests.split(";");
         for (int i = 0; i < interestArr.length && i < INTEREST_WEIGHTS.length; i++) {
             int interestCatId = getCatId(interestArr[i].trim());
-            double r = INTEREST_TO_AD[interestCatId];
+            double r = VIDEO_CATEGORY_MATCH[interestCatId][CAT_ID];
             viewerMul += r * INTEREST_WEIGHTS[i];
         }
 
-        // age multiplier
         String age    = fields.getOrDefault("viewer.age", "");
         String gender = fields.getOrDefault("viewer.gender", "M");
         int ageId = getAgeId(age);
-        double ageMul = "F".equals(gender) ? AGE_MUL_FEMALE_DIY[ageId] : AGE_MUL_MALE_DIY[ageId];
+        double ageMul = "F".equals(gender) ? AGE_MUL_FEMALE[ageId][CAT_ID] : AGE_MUL_MALE[ageId][CAT_ID];
         viewerMul += ageMul;
 
-        double estimated = Math.ceil(base * viewerMul * adMatch);
-        return estimated;
+        return Math.ceil(base * viewerMul * adMatch);
     }
 
     private static int[] computeBid(double estimatedValue) {
-        // %2 alt limit kontrolü
         if (ebucks < initialBudget * 0.02) {
             return new int[]{1, 1};
         }
 
-        // Değersiz tur kontrolü
         if (estimatedValue < 5.0) {
             return new int[]{1, 1};
         }
@@ -240,11 +225,7 @@ public class Main {
                     .toURI()
                     .getPath();
 
-            log("jarPath: %s", jarPath);
-
             String folderName = new File(jarPath).getParentFile().getName().toLowerCase();
-
-            log("folderName: %s", folderName);
 
             for (String cat : CATEGORY_NAMES) {
                 if (folderName.contains(cat.toLowerCase().replace(" ", ""))) {
@@ -254,7 +235,7 @@ public class Main {
         } catch (Exception e) {
             log("detectCategory error: %s", e.getMessage());
         }
-        return "DIY"; // default
+        return "DIY";
     }
 
     private static int getBaseValue(long viewCount) {
@@ -270,14 +251,14 @@ public class Main {
         for (int i = 0; i < CATEGORY_NAMES.length; i++) {
             if (CATEGORY_NAMES[i].equalsIgnoreCase(name)) return i;
         }
-        return 3; // default DIY
+        return 3;
     }
 
     private static int getAgeId(String age) {
         for (int i = 0; i < AGE_BRACKET_NAMES.length; i++) {
             if (AGE_BRACKET_NAMES[i].equals(age)) return i;
         }
-        return 2; // default 25-34
+        return 2;
     }
 
     private static long parseLong(String s) {
